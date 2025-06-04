@@ -434,3 +434,194 @@ Nếu bạn cần populate các trường trong document được populate (nest
     select: "_id first_name last_name",
     populate: { path: "another_field", select: "field1 field2" }
     })
+
+## Authentication
+
+**Tổng quan về Xác thực:**
+Xác thực là quá trình xác minh danh tính của người dùng. Trong Node.js, có hai phương pháp chính:
+- Stateful Authentication (Xác thực có trạng thái): Máy chủ lưu trữ thông tin phiên (session) để theo dõi trạng thái người dùng qua các yêu cầu.
+- Stateless Authentication (Xác thực không trạng thái): Máy chủ không lưu trữ thông tin phiên; thay vào đó, sử dụng token (thường là JWT) do client gửi để xác minh danh tính.
+
+### 1. Stateful Authentication (Xác thực có trạng thái)
+
+**Nguyên lý hoạt động**
+- Sau khi đăng nhập thành công, máy chủ tạo một phiên (session) và lưu thông tin phiên (như ID người dùng) ở phía máy chủ (thường trong bộ nhớ hoặc cơ sở dữ liệu như Redis).
+- Máy chủ gửi một cookie chứa session ID đến client. Cookie này được lưu trữ ở client và gửi lại trong mỗi yêu cầu tiếp theo.
+- Máy chủ sử dụng session ID để tra cứu thông tin phiên và xác thực người dùng.
+
+Cấu hình cần thiết
+- Phía Backend: Cần cấu hình CORS để cho phép gửi cookie:
+
+        const corsOptions = {
+        origin: true,
+        credentials: true,
+        };
+- Phía Client: Khi sử dụng fetch, cần thêm credentials: "include" để gửi cookie trong các yêu cầu cross-origin:
+
+        const response = await fetch("http://localhost:8080/api", {
+        method: "post",
+        credentials: "include",
+        });
+Ví dụ mã nguồn:
+Sử dụng middleware express-session để thiết lập xác thực dựa trên phiên:
+
+    const express = require("express");
+    const session = require("express-session");
+    const app = express();
+
+    app.use(
+    session({
+        secret: "your_secret_key",
+        resave: false,
+        saveUninitialized: false,
+        cookie: {
+        httpOnly: true,
+        maxAge: 30 * 60 * 1000, // Hết hạn sau 30 phút
+        },
+    })
+    );
+
+    // Route đăng nhập
+    app.post("/login", (req, res) => {
+    const { username, password } = req.body;
+    const user = users.find((u) => u.username === username && u.password === password);
+    if (user) {
+        req.session.userId = user.id; // Lưu ID người dùng vào phiên
+        res.send("Đăng nhập thành công");
+    } else {
+        res.status(401).send("Thông tin đăng nhập không hợp lệ");
+    }
+    });
+
+    // Route được bảo vệ
+    app.get("/home", (req, res) => {
+    if (req.session.userId) {
+        res.send(`Chào mừng đến với trang chủ, User ${req.session.userId}!`);
+    } else {
+        res.status(401).send("Không được phép truy cập");
+    }
+    });
+
+    // Route đăng xuất
+    app.get("/logout", (req, res) => {
+    req.session.destroy((err) => {
+        if (err) {
+        res.status(500).send("Lỗi khi đăng xuất");
+        } else {
+        res.redirect("/"); // Chuyển hướng về trang chủ
+        }
+    });
+    });
+
+**Ưu điểm**
+- Hiệu suất tốt: Thông tin phiên được lưu trên máy chủ, giảm tải xử lý phía client.
+- Bảo mật cao: Cookie với thuộc tính httpOnly ngăn chặn truy cập từ JavaScript, tăng cường bảo mật.
+- Trực quan: Phù hợp với các ứng dụng có khái niệm "phiên" liên tục (như các trang web truyền thống).
+
+**Nhược điểm**
+- Yêu cầu bộ nhớ: Máy chủ cần lưu trữ dữ liệu phiên, có thể tốn tài nguyên nếu có nhiều người dùng.
+- Tải trọng máy chủ: Máy chủ phải quản lý và tra cứu phiên, gây áp lực khi lưu lượng lớn.
+- Phụ thuộc vào hiệu quả mạng: Hiệu suất phụ thuộc vào việc lưu trữ và truy xuất phiên.
+Khi nào sử dụng?
+- Phù hợp với các ứng dụng web truyền thống (như trang quản trị, ứng dụng nội bộ) nơi cần duy trì trạng thái người dùng.
+- Thích hợp khi bạn có thể quản lý bộ nhớ máy chủ (ví dụ: sử dụng Redis) và không cần mở rộng quy mô lớn.
+### 2. Stateless Authentication (Xác thực không trạng thái)
+**Nguyên lý hoạt động**
+- Máy chủ không lưu trữ thông tin phiên. Thay vào đó, sau khi đăng nhập thành công, máy chủ tạo một token (thường là JWT) và gửi cho client.
+- Client lưu token (thường trong localStorage hoặc sessionStorage) và gửi token trong header Authorization (dạng Bearer <token>) cho mỗi yêu cầu tiếp theo.
+- Máy chủ xác minh token để xác thực người dùng mà không cần tra cứu dữ liệu phiên.
+
+Ví dụ mã nguồn:
+Sử dụng thư viện jsonwebtoken để triển khai xác thực dựa trên JWT:
+
+    const express = require("express");
+    const jwt = require("jsonwebtoken");
+    const app = express();
+    const secretKey = "your_secret_key";
+
+    // Route đăng nhập
+    app.post("/login", (req, res) => {
+    const { username, password } = req.body;
+    const user = users.find((u) => u.username === username && u.password === password);
+    if (user) {
+        jwt.sign({ user }, secretKey, { expiresIn: "1h" }, (err, token) => {
+        if (err) {
+            res.status(500).send("Lỗi tạo token");
+        } else {
+            res.json({ token });
+        }
+        });
+    } else {
+        res.status(401).send("Thông tin đăng nhập không hợp lệ");
+    }
+    });
+
+    // Middleware xác minh token
+    function verifyToken(req, res, next) {
+    const token = req.headers["authorization"];
+    if (token) {
+        jwt.verify(token.split(" ")[1], secretKey, (err, decoded) => {
+        if (err) {
+            res.status(403).send("Token không hợp lệ");
+        } else {
+            req.user = decoded.user;
+            next();
+        }
+        });
+    } else {
+        res.status(401).send("Không được phép truy cập");
+    }
+    }
+
+    // Route được bảo vệ
+    app.get("/dashboard", verifyToken, (req, res) => {
+    res.send("Chào mừng đến với trang dashboard");
+    });
+**Ưu điểm**
+- Dễ mở rộng: Không cần lưu trữ phiên, phù hợp với hệ thống phân tán hoặc nhiều máy chủ.
+Chịu lỗi tốt: Mỗi yêu cầu độc lập, không phụ thuộc vào trạng thái máy chủ.
+- Tái sử dụng linh hoạt: Token có thể được sử dụng trên nhiều nền tảng (web, mobile).
+
+**Nhược điểm**
+- Không có khái niệm phiên liên tục: Máy chủ không lưu trữ lịch sử yêu cầu, cần thêm cơ chế để quản lý trạng thái nếu cần.
+- Tốn tài nguyên xử lý: Xác minh token (đặc biệt với chữ ký số) có thể tốn CPU hơn so với tra cứu phiên.
+- Phức tạp hơn: Cần xử lý token hết hạn, làm mới token (refresh token), và bảo mật token ở phía client.
+
+**Khi nào sử dụng?**
+Phù hợp với các ứng dụng API, ứng dụng di động, hoặc hệ thống phân tán (microservices).
+Thích hợp khi cần hỗ trợ nhiều nền tảng (web, mobile) hoặc khi không muốn lưu trữ trạng thái trên máy chủ.
+
+**So sánh Stateful và Stateless**
+
+Tiêu chí|Stateful(Session-based)|Stateless(Token-based)|
+|-------|-----------------------|----------------------|
+Lưu trữ|Lưu thông tin phiên trên máy chủ|Không lưu trữ, sử dụng token|
+Cách hoạt động|Sử dụng session ID trong cookie|Sử dụng token (JWT) trong header|
+Hiệu suất|Nhanh hơn với tra cứu phiên|Có thể chậm hơn do xác minh token|
+Khả năng mở rộng|Khó mở rộng do cần đồng bộ phiên|Dễ mở rộng, phù hợp với hệ thống phân tán|
+Bảo mật|Cookie httpOnly tăng bảo mật|Token cần được bảo vệ ở client (nguy cơ XSS)|
+Phức tạp|triển khai	Đơn giản hơn, đặc biệt với ứng dụng web|Phức tạp hơn, cần quản lý token và refresh token|
+Trường hợp sử dụng|Web truyền thống, ứng dụng nội bộ|API, ứng dụng di động, hệ thống phân tán|
+
+**Hướng dẫn lựa chọn**
+
+Chọn Stateful khi:
+- Bạn xây dựng ứng dụng web truyền thống (như trang quản trị, ứng dụng nội bộ).
+- Có thể quản lý bộ nhớ máy chủ (ví dụ: sử dụng Redis để lưu phiên).
+- Cần duy trì trạng thái người dùng liên tục và không yêu cầu mở rộng quy mô lớn.
+
+Chọn Stateless khi:
+- Xây dựng API cho ứng dụng di động, SPA (Single Page Application), hoặc hệ thống microservices.
+- Muốn giảm tải cho máy chủ và hỗ trợ hệ thống phân tán.
+- Cần xác thực trên nhiều nền tảng (web, mobile) mà không phụ thuộc vào cookie.
+
+Lưu ý thực tế
+
+Stateful:
+- Đảm bảo cấu hình cookie an toàn (httpOnly, secure, sameSite).
+- Sử dụng cơ sở dữ liệu phiên (như Redis) để tăng hiệu suất và độ tin cậy.
+
+Stateless:
+- Bảo vệ token khỏi các cuộc tấn công XSS bằng cách lưu trữ an toàn (tránh localStorage nếu có thể).
+- Triển khai cơ chế refresh token để xử lý token hết hạn.
+- Sử dụng HTTPS để mã hóa dữ liệu truyền tải.
